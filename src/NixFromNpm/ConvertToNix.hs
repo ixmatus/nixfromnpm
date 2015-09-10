@@ -128,25 +128,35 @@ mkDefaultNix rec = do
                      "defaults" `bindTo` defaults]
   modifyFunctionBody (appendBindings newBindings) _startingExpr
 
+takeNewPackages :: Record (HashMap SemVer (Either NExpr ResolvedPkg))
+                -> Record (HashMap SemVer ResolvedPkg)
+takeNewPackages startingRec = do
+  let takeNews = modifyMap $ \case Left _ -> Nothing
+                                   Right rpkg -> Just rpkg
+      takeNonEmptys = H.filter (not . H.null)
+  takeNonEmptys $ H.map takeNews startingRec
+
 dumpPkgs :: MonadIO m
          => String
          -> Record (HashMap SemVer (Either NExpr ResolvedPkg))
          -> m ()
 dumpPkgs path rPkgs = liftIO $ do
-  createDirectoryIfMissing True path
-  withDir path $ forM_ (H.toList rPkgs) $ \(pkgName, pkgVers) -> do
-    writeFile "default.nix" $ show $ prettyNix $ mkDefaultNix rPkgs
-    let subdir = path </> unpack pkgName
-    createDirectoryIfMissing False subdir
-    withDir subdir $ forM_ (H.toList pkgVers) $ \(ver, rpkg) -> do
-      let nixexpr = case rpkg of
-            -- A left value means it had already existed; we can simply
-            -- dump out the package we had before.
-            Left e -> e
-            -- A right value means it's a ResolvedPkg object; in this case
-            -- we convert it to a nix expression.
-            Right r -> resolvedPkgToNix r
-      writeFile (unpack $ toDotNix ver) $ show $ prettyNix nixexpr
+  let newPackages = takeNewPackages rPkgs
+  -- if there aren't any new packages, we can stop here
+  if H.null newPackages
+  then putStrLn "No new packages created." >> return ()
+  else do
+    putStrsLn ["Creating new packages at ", pack path]
+    createDirectoryIfMissing True path
+    withDir path $ forM_ (H.toList newPackages) $ \(pkgName, pkgVers) -> do
+      writeFile "default.nix" $ show $ prettyNix $ mkDefaultNix rPkgs
+      let subdir = path </> unpack pkgName
+      -- If we don't have any new packages, we don't need to do
+      -- anything.
+      createDirectoryIfMissing False subdir
+      withDir subdir $ forM_ (H.toList pkgVers) $ \(ver, rpkg) -> do
+        let nixexpr = resolvedPkgToNix rpkg
+        writeFile (unpack $ toDotNix ver) $ show $ prettyNix nixexpr
 
 parseVersion :: String -> IO (Maybe (SemVer, NExpr))
 parseVersion pth = do
