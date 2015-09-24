@@ -34,6 +34,25 @@ import NixFromNpm.Parsers.NpmVersion
 import NixFromNpm.PackageMap
 --------------------------------------------------------------------------
 
+
+
+-- The high-level algorithm for fetching NPM packages is as follows:
+-- * Start with a queue containing `[(Name, SemVerRange)]` pairs.
+-- * As long as the queue is not empty:
+--   - Pop a pair @(N, R)@ off the queue.
+--   - If we have already defined a package which falls into the range R,
+--     we're done.
+--   - Query NPM for a package in this range, and parse the response into a
+--     `VersionInfo` object @V@.
+--   - Add each dependency @(N', R')@ to of @V@, query the NPM registries to find a
+--     matching version @V'@. Add the dependency name and the discovered
+--     version range to the queue. Generate a map of all of these dependencies.
+--   - Do the same process for each dev dependency.
+--   - Create a `ResolvedPkg` out of the generated dependency sets.
+
+
+
+
 -- | Things which can be converted into nix expressions: either they
 -- are actual nix expressions themselves (which can be either
 -- existing in the output, or existing in an extension), or they are
