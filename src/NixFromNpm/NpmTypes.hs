@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RecordWildCards #-}
 module NixFromNpm.NpmTypes where
 
 import Data.Aeson
@@ -31,14 +32,14 @@ data PackageMeta = PackageMeta {
 -- This type can be used as an input to the NpmLookup stuff to produce a
 -- `ResolvedPkg`.
 data VersionInfo = VersionInfo {
+  viName :: Text,
+  viVersion :: SemVer,
   viDependencies :: Record NpmVersionRange,
   viDevDependencies :: Record NpmVersionRange,
   viDist :: Maybe DistInfo, -- not present if in a package.json file.
   viMain :: Maybe Text,
-  viName :: Text,
   viHasTest :: Bool,
-  viMeta :: PackageMeta,
-  viVersion :: Text
+  viMeta :: PackageMeta
   } deriving (Show, Eq)
 
 -- | Distribution info from NPM. Tells us the URL and hash of a tarball.
@@ -106,6 +107,22 @@ instance FromJSON DistInfo where
     tarball <- o .: "tarball"
     shasum <- o .: "shasum"
     return $ DistInfo tarball shasum
+
+-- | Class of things which act like concrete packages; i.e. they correspond
+-- to a particular package at a particular version.
+class ConcretePackage t where
+  getNameAndVer :: t -> (Name, SemVer)
+
+instance ConcretePackage VersionInfo where
+  getNameAndVer VersionInfo{..} = (viName, viVersion)
+
+instance ConcretePackage ResolvedPkg where
+  getNameAndVer ResolvedPkg{..} = (rpName, rpVersion)
+
+instance (ConcretePackage a, ConcretePackage b) =>
+         ConcretePackage (Either a b) where
+  getNameAndVer (Left a) = getNameAndVer a
+  getNameAndVer (Right b) = getNameAndVer b
 
 -- | Gets a hashmap from an object, or otherwise returns an empty hashmap.
 getDict :: (FromJSON a) => Text -> Object -> Parser (HashMap Text a)

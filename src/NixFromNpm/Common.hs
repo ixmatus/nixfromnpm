@@ -35,7 +35,7 @@ module NixFromNpm.Common (
     Name, Record, Path,
     tuple, tuple3, fromRight, cerror, cerror', uriToText, uriToString, slash,
     putStrsLn, pathToText, putStrs, dropSuffix, maybeIf, grab, withDir,
-    pathToString, joinBy, mapJoinBy, getEnv, modifyMap
+    pathToString, joinBy, mapJoinBy, getEnv, modifyMap, shell, silentShell
   ) where
 
 import ClassyPrelude hiding (assert, asList, find, FilePath, bracket,
@@ -189,3 +189,23 @@ mapJoinBy sep func = joinBy sep . map func
 -- | Reads an environment variable.
 getEnv :: Text -> IO (Maybe Text)
 getEnv = shelly . silently . get_env
+
+-- | Performs a shell command and reports if it errors; otherwise returns
+--   the stdout from the command.
+shell :: (MonadIO m, MonadError e m, ErrorList e) =>
+         Sh Text ->
+         m Text
+shell action = do
+  (code, out, err) <- shelly $ errExit False $ do
+    out <- action
+    code <- lastExitCode
+    err <- lastStderr
+    return (code, out, err)
+  case code of
+    0 -> return out
+    n -> throwErrorC $ catMaybes $ [Just "Shell command returned an error.",
+                                    maybeIf (out /= "") $ "\nstdout:\n" <> out,
+                                    Just $ "\nstderr:\n" <> err]
+
+silentShell :: (MonadIO m, MonadError e m, ErrorList e) => Sh Text -> m Text
+silentShell = shell . silently

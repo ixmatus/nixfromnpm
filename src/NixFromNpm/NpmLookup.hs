@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RecordWildCards #-}
 module NixFromNpm.NpmLookup where
 
 --------------------------------------------------------------------------
@@ -14,6 +15,7 @@ import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as H
 import Data.HashSet (HashSet)
 import qualified Data.HashSet as HS
+import qualified Data.Map as M
 
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.Aeson.Parser
@@ -51,7 +53,15 @@ import NixFromNpm.PackageMap
 --   - Create a `ResolvedPkg` out of the generated dependency sets.
 
 
+-- | A nix expression which expresses a particular build of a package.
+data WrappedNixExpr = WrappedNixExpr {
+  wneName :: Name,
+  wneVersion :: SemVer,
+  wneExpr :: NExpr
+  } deriving (Show, Eq)
 
+instance ConcretePackage WrappedNixExpr where
+  getNameAndVer WrappedNixExpr{..} = (wneName, wneVersion)
 
 -- | Things which can be converted into nix expressions: either they
 -- are actual nix expressions themselves (which can be either
@@ -59,20 +69,29 @@ import NixFromNpm.PackageMap
 -- new packages which we have discovered.
 data FullyDefinedPackage
   = NewPackage ResolvedPkg
-  | FromExistingInOutput NExpr
-  | FromExistingInExtension Name NExpr
+  | FromExistingInOutput WrappedNixExpr
+  | FromExistingInExtension Name WrappedNixExpr
   deriving (Show, Eq)
+
+instance ConcretePackage FullyDefinedPackage where
+  getNameAndVer (NewPackage rp) = getNameAndVer rp
+  getNameAndVer (FromExistingInOutput wne) = getNameAndVer wne
+  getNameAndVer (FromExistingInExtension _ wne) = getNameAndVer wne
 
 -- | The type of pre-existing packages, which can either come from the
 -- output path, or come from an extension
 data PreExistingPackage
-  = FromOutput NExpr
-  | FromExtension Name NExpr
+  = FromOutput WrappedNixExpr
+  | FromExtension Name WrappedNixExpr
   deriving (Show, Eq)
 
+instance ConcretePackage PreExistingPackage where
+  getNameAndVer (FromOutput wne) = getNameAndVer wne
+  getNameAndVer (FromExtension _ wne) = getNameAndVer wne
+
 toFullyDefined :: PreExistingPackage -> FullyDefinedPackage
-toFullyDefined (FromOutput expr) = FromExistingInOutput expr
-toFullyDefined (FromExtension name expr) = FromExistingInExtension name expr
+toFullyDefined (FromOutput wne) = FromExistingInOutput wne
+toFullyDefined (FromExtension name wne) = FromExistingInExtension name wne
 
 -- | The state of the NPM fetcher.
 data NpmFetcherState = NpmFetcherState {
@@ -88,7 +107,11 @@ data NpmFetcherState = NpmFetcherState {
   pkgInfos :: Record PackageInfo,
   -- | Queue of packages waiting to be resolved, since we are fetching using
   -- breadth-first search.
-  packageWaitQueue :: D.BankersDequeue (Name, SemVerRange),
+  requirementQueue :: LookupQueue,
+  -- | Maps Requirements to concrete names and ranges.
+  resolutionMap :: M.Map Requirement (Name, SemVer),
+  -- | VersionInfo objects that we've encountered
+  encounteredVIs :: PackageMap VersionInfo,
   -- | For cycle detection.
   currentlyResolving :: PackageMap (),
   -- | Stack of packages that we are resolving so we can get the path to the
@@ -161,26 +184,6 @@ bestMatchFromRecord range rec = do
   case filter (matches range . fst) pairs of
     [] -> throwError1 "No versions satisfy given range"
     matches -> return $ snd $ maximumBy (compare `on` fst) matches
-
--- | Performs a shell command and reports if it errors; otherwise returns
---   the stdout from the command.
-shell :: Sh Text -> NpmFetcher Text
-shell action = do
-  (code, out, err) <- shelly $ errExit False $ do
-    out <- action
-    code <- lastExitCode
-    err <- lastStderr
-    return (code, out, err)
-  case code of
-    0 -> return out
-    n -> do
-      throwErrorC $ catMaybes [
-                      Just "Shell command returned an error.",
-                      maybeIf (out /= "") $ "\nstdout:\n" <> out,
-                      Just $ "\nstderr:\n" <> err]
-
-silentShell :: Sh Text -> NpmFetcher Text
-silentShell = shell . silently
 
 -- | Returns the SHA1 hash of the result of fetching the URI, and the path
 --   in which the tarball is stored.
@@ -436,7 +439,7 @@ resolveByTag tag pkgName = do
 
 parseURIs :: [Text] -> [URI]
 parseURIs rawUris = map p $! rawUris where
-  p txt = case parseURI $ unpack txt of
+  p txt = case parseURI $! unpack txt of
             Nothing -> errorC ["Invalid URI: ", txt]
             Just uri -> uri
 
@@ -449,7 +452,7 @@ startState existing registries token = do
       registries = parseURIs registries,
       githubAuthToken = token,
       resolved = pmMap toFullyDefined existing,
-      packageWaitQueue = D.empty,
+      requirementQueue = D.empty,
       packageStackTrace = [],
       pkgInfos = mempty,
       currentlyResolving = mempty,
@@ -457,23 +460,13 @@ startState existing registries token = do
       getDevDeps = False
     }
 
--- | Read NPM registry from env or use default.
-getRegistries :: IO [Text]
-getRegistries = do
-  let npmreg = "https://registry.npmjs.org/"
-  others <- shelly $ silently $ do
-    get_env "ADDITIONAL_NPM_REGISTRIES" >>= \case
-      Nothing -> return []
-      Just regs -> return $ T.words regs
-  return (others `snoc` npmreg)
-
--- | Read github auth token from env or use none.
-getToken :: IO (Maybe Text)
-getToken = shelly $ silently $ get_env "GITHUB_TOKEN"
+-- | The default registry list just has the global npmjs registry.
+defaultRegistries :: [Text]
+defaultRegistries = ["https://registry.npmjs.org/"]
 
 runIt :: NpmFetcher a -> IO (a, NpmFetcherState)
 runIt x = do
-  state <- startState mempty <$> getRegistries <*> getToken
+  let state = startState mempty defaultRegistries Nothing
   runItWith state x
 
 runItWith :: NpmFetcherState -> NpmFetcher a -> IO (a, NpmFetcherState)
@@ -482,69 +475,120 @@ runItWith state x = do
     (Left elist, _) -> error $ "\n" <> (unpack $ render elist)
     (Right x, state) -> return (x, state)
 
+-- | Fetch the latest version of the package, given some information about
+-- how to resolve its dependencies
 getPkg :: Name -- ^ Name of package to get.
        -> PackageMap PreExistingPackage -- ^ Set of pre-existing packages.
+       -> [Text] -- ^ List of registries to use.
        -> Maybe Text -- ^ A possible github token.
-       -> IO (PackageMap FullyDefinedPackage) -- ^ Set of fully defined packages.
-getPkg name existing token = do
-  let range = Gt (0, 0, 0)
-  state <- startState existing <$> getRegistries <*> pure token
+       -> IO (PackageMap FullyDefinedPackage) -- ^ Set of defined packages.
+getPkg name existing registries token = do
+  let range = Gt (0, 0, 0) -- This is the loosest version range, so we will
+                           -- grab the latest one (unless we already have one).
+      state = startState existing registries token
   (_, finalState) <- runItWith state (resolveDep name range)
   return (resolved finalState)
-So the algorithm is:
 
-Resolving ranges:
+-------------------------------------------------------------------------------
+-- High-level algorithm for resolving packages:
 
-have a queue of Ranges.
-while queue is not empty:
-  pluck a range (name, vrange) off the queue.
-  let result = resolve(name, vrange)
-  if result is a fully resolved package, do nothing
-  if result is a version info,
-    add all of the ranges from its dependencies to the queue
-    add the version info to the list of version infos.
-  record a mapping of the range to the name and version of the result.
+-- We start with a queue of Ranges, which are (Name, Range) pairs.
+-- While queue is not empty:
+--   pluck a range (name, vrange) off the queue.
+--  let result = resolve(name, vrange)
+--  if result is a fully resolved package, do nothing
+--  if result is a version info,
+--    add all of the ranges from its dependencies to the queue
+--    add the version info to the list of version infos.
+--  record a mapping of the range to the name and version of the result.
 
-for each version info in the list,
-  turn it into a ResolvedPackage by translating all of its ranges to (name, version)s.
-
-
-
-type Requirement = (Name, SemVerRange)
-type LookupQueue = BankersDequeue Requirement
-type PackagePromise = Either FullyResolvedPackage VersionInfo
-
-getNameAndVer :: PackagePromise -> (Name, SemVer)
-
-resolveRequirement :: Requirement -> NpmLookup PackagePromise
-
-popQueue :: NpmLookup Requirement
-
-pushQueue :: Requirement -> NpmLookup ()
-
--- | Translates a version info object into a fully resolved package.
-resolveVersionInfo :: VersionInfo -> NpmLookup FullyResolvedPackage
+-- for each version info in the list,
+--  turn it into a ResolvedPackage by translating all of its ranges to
+--  (name, version)s.
 
 
--- | Associate a requirement we've encountered with a package that has a
--- name and version that satisfy the requirement.
-mapResult :: Requirement -> PackagePromise -> NpmFetcher ()
-mapResult req promise = modify $ \s -> s {
-  resolutionMap = insert req (getNameAndVer promise) (resolutionMap s)
+-- | A requirement is something that we are depending on: a particular package
+-- within a particular version range.
+type Requirement = (Name, NpmVersionRange)
+-- | The queue of all of the things that we are attempting to resolve.
+type LookupQueue = D.BankersDequeue Requirement
+-- | Something which we guarantee (on penalty of failure) that will be
+-- able to be resolved into a fully resolved package.
+type PackagePromise = Either FullyDefinedPackage VersionInfo
+
+-- | Given a requirement, get a PackagePromise by either using something
+-- already fetched/existing or querying NPM.
+resolveRequirement :: Requirement -> NpmFetcher PackagePromise
+resolveRequirement = P.undefined
+
+-- | Pop a requirement off of the queue.
+popQueue :: NpmFetcher (Maybe Requirement)
+popQueue = do
+  popBack <$> gets requirementQueue >>= \case
+    Nothing -> return Nothing
+    Just (requirement, rest) -> do
+      modify $ \s -> s {requirementQueue = rest}
+      return $ Just requirement
+
+-- | Push a requirement onto the queue.
+pushQueue :: Requirement -> NpmFetcher ()
+pushQueue req = modify $ \s -> s {
+  requirementQueue = pushFront req (requirementQueue s)
   }
 
-resolveRequirements :: NpmLookup ()
-resolveRequirements = untilM_ isQueueEmpty $ do
-  requirement <- popQueue
-  result <- resolveRequirement requirement
-  mapResult requirement result
-  case result of
-    Left _ -> return ()
-    Right vi -> do
-      forM_ (dependencies vi) pushQueue
-      recordVersionInfo vi
+-- | Resolve a map of version ranges into a map of versions. Assumes that
+-- previous steps have found all of the hard-coded versions.
+reqRecordToDepRecord :: Record NpmVersionRange -> NpmFetcher (Record SemVer)
+reqRecordToDepRecord rangeRec = H.fromList $
+  forM (H.toList rangeRec) $ \(name, range) -> do
+    M.lookup (name, range) <$> gets resolutionMap >>= \case
+      Nothing -> throwErrorC ["FATAL: dependency ", name, " in range ",
+                              render range, " should have been resolved"]
+      Just (name, version) -> return (name, version)
 
-while :: Monad m => m Bool -> m () -> m ()
-while cond action = cond >>= \case
-  True -> action >> while cond action
-  False -> return ()
+-- | Given a VersionInfo object, translate it into a ResolvedPkg object.
+-- Uses the map that we've built up translating each encountered version range
+-- into an actual version.
+resolveVersionInfo' :: VersionInfo -> NpmFetcher ResolvedPkg
+resolveVersionInfo' VersionInfo{..} = do
+  case viDist of
+    Nothing ->
+      throwErrorC ["Version information did not contain distribution."]
+    Just dist -> do
+      deps <- mapM resolveDep $ H.toList viDependencies
+      devDeps <- mapM resolveDep $ H.toList viDevDependencies
+      return $ ResolvedPkg {
+        rpName = viName,
+        rpVersion = viVersion,
+        rpMeta = viMeta,
+        rpDistInfo = dist,
+        rpDependencies = deps,
+        rpDevDependencies = devDeps
+        }
+
+-- | Resolve all of the requirements. Equates to a BFS traversal of the
+-- dependency tree.
+resolveRequirements :: NpmFetcher ()
+resolveRequirements = popQueue >>= \case
+  Nothing -> return () -- loop has completed
+  Just req -> do
+    result <- resolveRequirement req
+    -- | Associate the requirement with the name/version we've found
+    modify $ \s -> s {
+      resolutionMap = M.insert req (getNameAndVer result) (resolutionMap s)
+      }
+    case result of
+      Left _ -> return ()
+      Right vi -> do
+        let (name, version) = getNameAndVer vi
+        pmMember name version <$> gets encounteredVIs >>= \case
+          True -> return () -- We've already queued up this guy's dependencies.
+          False -> do -- We haven't seen it yet.
+            -- Add all the dependencies to the queue.
+            forM_ (viDependencies vi <> viDevDependencies vi) pushQueue
+            -- Record having seen this versioninfo object.
+            modify $ \s -> s {
+              encounteredVIs = pmInsert name version vi (encounteredVIs s)
+              }
+    -- Keep looping
+    resolveRequirements
