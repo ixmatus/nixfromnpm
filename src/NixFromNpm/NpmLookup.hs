@@ -472,3 +472,60 @@ getPkg name existing token = do
   state <- startState existing <$> getRegistries <*> pure token
   (_, finalState) <- runItWith state (resolveDep name range)
   return (resolved finalState)
+So the algorithm is:
+
+Resolving ranges:
+
+have a queue of Ranges.
+while queue is not empty:
+  pluck a range (name, vrange) off the queue.
+  let result = resolve(name, vrange)
+  if result is a fully resolved package, do nothing
+  if result is a version info,
+    add all of the ranges from its dependencies to the queue
+    add the version info to the list of version infos.
+  record a mapping of the range to the name and version of the result.
+
+for each version info in the list,
+  turn it into a ResolvedPackage by translating all of its ranges to (name, version)s.
+
+
+
+type Requirement = (Name, SemVerRange)
+type LookupQueue = BankersDequeue Requirement
+type PackagePromise = Either FullyResolvedPackage VersionInfo
+
+getNameAndVer :: PackagePromise -> (Name, SemVer)
+
+resolveRequirement :: Requirement -> NpmLookup PackagePromise
+
+popQueue :: NpmLookup Requirement
+
+pushQueue :: Requirement -> NpmLookup ()
+
+-- | Translates a version info object into a fully resolved package.
+resolveVersionInfo :: VersionInfo -> NpmLookup FullyResolvedPackage
+
+
+-- | Associate a requirement we've encountered with a package that has a
+-- name and version that satisfy the requirement.
+mapResult :: Requirement -> PackagePromise -> NpmFetcher ()
+mapResult req promise = modify $ \s -> s {
+  resolutionMap = insert req (getNameAndVer promise) (resolutionMap s)
+  }
+
+resolveRequirements :: NpmLookup ()
+resolveRequirements = untilM_ isQueueEmpty $ do
+  requirement <- popQueue
+  result <- resolveRequirement requirement
+  mapResult requirement result
+  case result of
+    Left _ -> return ()
+    Right vi -> do
+      forM_ (dependencies vi) pushQueue
+      recordVersionInfo vi
+
+while :: Monad m => m Bool -> m () -> m ()
+while cond action = cond >>= \case
+  True -> action >> while cond action
+  False -> return ()
