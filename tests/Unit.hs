@@ -1,3 +1,8 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE QuasiQuotes #-}
 module Unit (main) where
 
 import ClassyPrelude hiding ((<>))
@@ -64,7 +69,7 @@ npmVersionParserSpec = describe "npm version parser" $ do
     let uri = joinBy "/" ["https://github.com", owner, repo]
                 <> "#" <> ref
     parseNpmVersionRange uri `shouldBeJ`
-      GitIdentifier (GitId Github owner repo (Just ref))
+      GitIdentifier (GitId Github owner repo (Just $ SomeRef ref))
 
   it "should parse a partial git uri" $ do
     let uri = "holidaycheck/react-autosuggest#" <>
