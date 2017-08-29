@@ -94,7 +94,7 @@ toNixExpr name (Broken reason) = "brokenPackage" @@ mkNonRecSet
 
 -- | Write a nix expression pretty-printed to a file.
 writeNix :: MonadIO io => FilePath -> NExpr -> io ()
-writeNix path = writeFile path . (<> "\n") . show . prettyNix
+writeNix path = writeFileUtf8 path . (<> "\n") . tshow . prettyNix
 
 -- | Gets the .nix filename of a semver. E.g. (0, 1, 2) -> 0.1.2.nix
 toDotNix :: SemVer -> FilePath

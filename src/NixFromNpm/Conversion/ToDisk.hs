@@ -66,7 +66,7 @@ parseVersionFiles verbose pkgName folder = do
     case parseSemVer (pathToText versionTxt) of
       _ | ext /= Just "nix" -> return Nothing -- not a nix file
       Left _ -> return Nothing -- not a version file
-      Right version -> parseNixString . pack <$> readFile path >>= \case
+      Right version -> parseNixString . unpack <$> readFileUtf8 path >>= \case
         Failure err -> do
           putStrsLn ["Warning: expression for ", tshow pkgName, " version ",
                      pathToText versionTxt, " failed to parse:\n", tshow err]
@@ -169,7 +169,7 @@ initializeOutput = do
   putStrsLn ["Initializing  ", pathToText outputPath]
   createDirectoryIfMissing outputPath
   createDirectoryIfMissing (outputPath </> nodePackagesDir)
-  writeFile (outputPath </> ".nixfromnpm-version") $ tshow version
+  writeFileUtf8 (outputPath </> ".nixfromnpm-version") $ tshow version
   case H.keys extensions of
     [] -> do -- Then we are creating a new root.
       unlessExists defaultNixPath $
