@@ -47,7 +47,7 @@ library
                      , TypeFamilies
                      , TypeSynonymInstances
                      , ViewPatterns
-  build-depends:       base >=4.8 && <4.9
+  build-depends:       base >=4.8 && < 5.0
                      , classy-prelude
                      , text
                      , bytestring
@@ -94,7 +94,7 @@ executable nixfromnpm
                      , TypeFamilies
                      , TypeSynonymInstances
                      , ViewPatterns
-  build-depends:       base >=4.8 && <4.9
+  build-depends:       base >=4.8 && < 5.0
                      , classy-prelude
                      , text
                      , bytestring
@@ -140,7 +140,7 @@ test-suite unit-tests
                      , TypeFamilies
                      , TypeSynonymInstances
                      , ViewPatterns
-  build-depends:       base >=4.8 && <4.9
+  build-depends:       base >=4.8 && < 5.0
                      , classy-prelude
                      , text
                      , bytestring
