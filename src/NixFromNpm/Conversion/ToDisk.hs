@@ -16,7 +16,7 @@ import qualified Data.Map as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.Printf (printf)
-import Shelly (shelly, cp_r)
+import Shelly (shelly, cp_r, rm_rf)
 import System.Exit
 
 import Data.SemVer
@@ -175,16 +175,15 @@ initializeOutput = do
       unlessExists defaultNixPath $
         writeNix (outputPath </> "default.nix") $ rootDefaultNix npm3
       let outputNodeLib = outputPath </> "nodeLib"
-      rm_rf nodelib
 
       putStrsLn ["Generating node libraries in ", pathToText outputPath]
-      createDirectoryIfMissing nodelib
 
-      -- Get the path to the files bundled with nixfromnpm which contain
-      -- nix libraries.
       nixlibs <- getDataFileName "nix-libs"
       let inputNodeLib = nixlibs </> "nodeLib"
-      cp_r inputNodeLib outputNodeLib
+
+      shelly $ do
+        rm_rf outputNodeLib
+        cp_r inputNodeLib outputNodeLib
 
     extName:_ -> do -- Then we are extending things.
       unlessExists defaultNixPath $ do
